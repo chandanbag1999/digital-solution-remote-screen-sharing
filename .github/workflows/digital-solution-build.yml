@@ -36,9 +36,11 @@ jobs:
         with:
           vcpkgGitCommitId: "120deac3062162151622ca4860575a33844ba10b"
 
-      - name: Install vcpkg dependencies
-        run: vcpkg install --triplet x64-windows-static
-        working-directory: ${{ github.workspace }}
+      - name: Install vcpkg dependencies (Windows)
+        run: |
+          $env:VCPKG_ROOT = "${{ github.workspace }}\vcpkg"
+          & "$env:VCPKG_ROOT\vcpkg.exe" install opus libjpeg-turbo libvpx libyuv aom --triplet x64-windows-static
+        shell: powershell
 
       - name: Flutter pub get
         run: flutter pub get
@@ -47,18 +49,17 @@ jobs:
       - name: Build Rust library
         run: cargo build --release
         env:
-          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
           LIBCLANG_PATH: "C:/Program Files/LLVM/bin"
 
       - name: Build Flutter Windows
         run: flutter build windows --release
         working-directory: flutter
         env:
-          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
 
       - name: Copy DLL to output
-        run: |
-          copy target\release\librustdesk.dll flutter\build\windows\x64\runner\Release\
+        run: copy target\release\librustdesk.dll flutter\build\windows\x64\runner\Release\
         shell: cmd
 
       - name: Upload Windows artifact
@@ -69,7 +70,7 @@ jobs:
 
   # ──────────────────── macOS ────────────────────
   build-macos:
-    name: Build macOS (Intel + Apple Silicon)
+    name: Build macOS (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -77,9 +78,13 @@ jobs:
         include:
           - os: macos-15-intel
             arch: x86_64
+            vcpkg_triplet: x64-osx
+            rust_target: x86_64-apple-darwin
             artifact: digital-solution-macos-intel
           - os: macos-14
             arch: aarch64
+            vcpkg_triplet: arm64-osx
+            rust_target: aarch64-apple-darwin
             artifact: digital-solution-macos-arm64
     steps:
       - name: Checkout
@@ -91,7 +96,7 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: "1.81"
-          targets: ${{ matrix.arch }}-apple-darwin
+          targets: ${{ matrix.rust_target }}
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -99,20 +104,26 @@ jobs:
           flutter-version: "3.24.x"
           channel: stable
 
-      - name: Install dependencies
-        run: brew install nasm yasm pkg-config
+      - name: Install system dependencies
+        run: brew install nasm yasm pkg-config create-dmg
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: "120deac3062162151622ca4860575a33844ba10b"
 
+      - name: Install vcpkg dependencies (macOS)
+        run: |
+          ${{ github.workspace }}/vcpkg/vcpkg install opus libjpeg-turbo libvpx libyuv aom --triplet ${{ matrix.vcpkg_triplet }}
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
       - name: Flutter pub get
         run: flutter pub get
         working-directory: flutter
 
       - name: Build Rust library
-        run: cargo build --release --target ${{ matrix.arch }}-apple-darwin
+        run: cargo build --release --target ${{ matrix.rust_target }}
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
@@ -122,15 +133,14 @@ jobs:
 
       - name: Package DMG
         run: |
-          brew install create-dmg || true
           create-dmg \
             --volname "Digital Solution" \
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 100 \
             --app-drop-link 425 120 \
-            "DigitalSolution.dmg" \
-            "flutter/build/macos/Build/Products/Release/"
+            "DigitalSolution-${{ matrix.arch }}.dmg" \
+            "flutter/build/macos/Build/Products/Release/" || true
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -171,13 +181,16 @@ jobs:
           flutter-version: "3.24.x"
           channel: stable
 
-      - name: Setup Android NDK
+      - name: Setup Android SDK & NDK
         uses: android-actions/setup-android@v3
+
+      - name: Install NDK specific version
+        run: sdkmanager "ndk;27.3.13750724"
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version "3.1.2" --locked
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libclang-dev nasm yasm libssl-dev
@@ -193,11 +206,15 @@ jobs:
 
       - name: Build Rust for Android
         run: |
-          cargo ndk -t aarch64-linux-android -t armv7-linux-androideabi -t x86_64-linux-android \
-            -o flutter/android/app/src/main/jniLibs build --release
+          cargo ndk \
+            -t aarch64-linux-android \
+            -t armv7-linux-androideabi \
+            -t x86_64-linux-android \
+            -o flutter/android/app/src/main/jniLibs \
+            build --release
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
 
       - name: Build Flutter APK
         run: flutter build apk --release
