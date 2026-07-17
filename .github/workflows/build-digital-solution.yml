@@ -204,86 +204,6 @@ jobs:
         name: digital-solution-windows-x64-exe
         path: ./SignOutput/DigitalSolution-windows-x64.exe
     if: false
-  build-macos-arm64:
-    name: macOS Apple Silicon (arm64)
-    needs: generate-bridge
-    runs-on: macos-14
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-    - name: Restore bridge files
-      uses: actions/download-artifact@v4
-      with:
-        name: bridge-artifact
-        path: ./
-    - name: Install Rust ${{ env.MAC_RUST_VERSION }}
-      uses: dtolnay/rust-toolchain@v1
-      with:
-        toolchain: ${{ env.MAC_RUST_VERSION }}
-        targets: aarch64-apple-darwin
-        components: rustfmt
-    - uses: Swatinem/rust-cache@v2
-      with:
-        prefix-key: macos-14-arm64
-    - name: Install build runtime
-      run: "brew install llvm create-dmg\nif command -v pkg-config &>/dev/null; then\n\
-        \  echo \"pkg-config already installed\"\nelse\n  brew install pkg-config\n\
-        fi\n"
-    - name: Install NASM 2.16.03
-      run: 'wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
-
-        unzip nasm-2.16.03-macosx.zip
-
-        sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
-
-        nasm --version
-
-        '
-    - name: Install Flutter ${{ env.FLUTTER_VERSION }}
-      uses: subosito/flutter-action@v2
-      with:
-        channel: stable
-        flutter-version: ${{ env.FLUTTER_VERSION }}
-    - name: Patch Flutter (dropdown fix for 3.24.5)
-      run: 'cd $(dirname $(dirname $(which flutter)))
-
-        [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace
-        }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
-
-        '
-    - name: Flutter workaround (scheduler binding issue
-      shell: bash
-      run: "cd \"$(dirname \"$(which flutter)\")\"\nsed -i -e 's/_setFramesEnabledState(false);/\\\
-        /\\/_setFramesEnabledState(false);/g' \\\n  ../packages/flutter/lib/src/scheduler/binding.dart\n\
-        grep -n '_setFramesEnabledState' ../packages/flutter/lib/src/scheduler/binding.dart\
-        \ || true\n"
-    - name: Setup vcpkg
-      uses: lukka/run-vcpkg@v11
-      with:
-        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-        doNotCache: false
-    - name: Install vcpkg dependencies
-      run: "if ! $VCPKG_ROOT/vcpkg \\\n  install \\\n  --x-install-root=\"$VCPKG_ROOT/installed\"\
-        ; then\n  find \"${VCPKG_ROOT}/\" -name \"*.log\" | while read -r f; do\n\
-        \    echo \"=== $f ===\"; cat \"$f\"; echo \"\"\n  done\n  exit 1\nfi\n"
-    - name: Persist VCPKG_ROOT to GITHUB_ENV
-      run: echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
-    - name: Patch macOS deployment target to 12.3 (all 4 files)
-      run: "MIN_VER=\"12.3\"\n# 1. build.py - cargo MACOSX_DEPLOYMENT_TARGET env\n\
-        sed -i -e \"s/MACOSX_DEPLOYMENT_TARGET\\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_VER}/\"\
-        \ build.py\n# 2. CocoaPods Podfile\nsed -i -e \"s/platform :osx, '.*'/platform\
-        \ :osx, '${MIN_VER}'/\" flutter/macos/Podfile\n# 3. Cargo.toml osx_minimum_system_version\n\
-        sed -i -e \"s/osx_minimum_system_version = \\\"[0-9]*.[0-9]*\\\"/osx_minimum_system_version\
-        \ = \\\"${MIN_VER}\\\"/\" Cargo.toml\n# 4. Xcode project.pbxproj (CRITICAL\
-        \ - fixes desktop_multi_window error)\nsed -i -e \"s/MACOSX_DEPLOYMENT_TARGET\
-        \ = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_VER};/\" \\\n  flutter/macos/Runner.xcodeproj/project.pbxproj\n"
-    - name: Build macOS arm64
-      env:
-        MACOSX_DEPLOYMENT_TARGET: '12.3'
-      run: './build.py --flutter --hwcodec --unix-file-copy-paste
-
         '
     - name: Create DMG (Apple Silicon)
       run: "CREATE_DMG=\"$(command -v create-dmg)\"\nCREATE_DMG=\"$(readlink -f \"\
@@ -299,9 +219,9 @@ jobs:
         path: '*.dmg'
     if: false
   build-macos-intel:
-    name: macOS Intel (x86_64)
+    name: macOS Intel (x86_64 cross on M1)
     needs: generate-bridge
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -313,11 +233,10 @@ jobs:
         name: bridge-artifact
         path: ./
     - name: Install Rust ${{ env.MAC_RUST_VERSION }}
-      uses: dtolnay/rust-toolchain@v1
-      with:
-        toolchain: ${{ env.MAC_RUST_VERSION }}
-        targets: x86_64-apple-darwin
-        components: rustfmt
+      run: |
+        rustup toolchain install ${{ env.MAC_RUST_VERSION }}-x86_64-apple-darwin
+        rustup default ${{ env.MAC_RUST_VERSION }}-x86_64-apple-darwin
+        rustup component add rustfmt
     - uses: Swatinem/rust-cache@v2
       with:
         prefix-key: macos-13-intel
@@ -359,6 +278,9 @@ jobs:
         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
         doNotCache: false
     - name: Install vcpkg dependencies
+      env:
+        VCPKG_DEFAULT_TRIPLET: x64-osx
+        VCPKG_DEFAULT_HOST_TRIPLET: x64-osx
       run: "if ! $VCPKG_ROOT/vcpkg \\\n  install \\\n  --x-install-root=\"$VCPKG_ROOT/installed\"\
         ; then\n  find \"${VCPKG_ROOT}/\" -name \"*.log\" | while read -r f; do\n\
         \    echo \"=== $f ===\"; cat \"$f\"; echo \"\"\n  done\n  exit 1\nfi\n"
@@ -370,7 +292,8 @@ jobs:
         \ flutter/macos/Podfile\nsed -i -e \"s/osx_minimum_system_version = \\\"[0-9]*.[0-9]*\\\
         \"/osx_minimum_system_version = \\\"${MIN_VER}\\\"/\" Cargo.toml\nsed -i -e\
         \ \"s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET =\
-        \ ${MIN_VER};/\" \\\n  flutter/macos/Runner.xcodeproj/project.pbxproj\n"
+        \ ${MIN_VER};/\" \\\n  flutter/macos/Runner.xcodeproj/project.pbxproj\n\
+        sed -i -e \"s/mac_arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'/mac_arch = 'x86_64'/g\" build.py\n"
     - name: Build macOS Intel
       env:
         MACOSX_DEPLOYMENT_TARGET: '12.3'
