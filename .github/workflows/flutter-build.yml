@@ -1725,7 +1725,6 @@ jobs:
 
   build-rustdesk-linux-sciter:
     if: false
-    if: ${{ inputs.upload-artifact }}
     runs-on: ${{ matrix.job.on }}
     name: build-rustdesk-linux-sciter ${{ matrix.job.target }}
     strategy:
@@ -2091,7 +2090,6 @@ jobs:
 
   build-rustdesk-web:
     if: false
-    if: False
     name: build-rustdesk-web
     runs-on: ubuntu-22.04
     permissions:
