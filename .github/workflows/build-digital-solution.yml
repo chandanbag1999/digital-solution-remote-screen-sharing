@@ -1,6 +1,6 @@
 name: Digital Solution Build
 on:
-  workflow_dispatch:
+  workflow_dispatch: null
 env:
   RUST_VERSION: '1.75'
   MAC_RUST_VERSION: '1.81'
@@ -313,10 +313,13 @@ jobs:
         name: bridge-artifact
         path: ./
     - name: Install Rust ${{ env.MAC_RUST_VERSION }}
-      run: |
-        rustup toolchain install ${{ env.MAC_RUST_VERSION }}-x86_64-apple-darwin --force-non-host
-        rustup default ${{ env.MAC_RUST_VERSION }}-x86_64-apple-darwin
-        rustup component add rustfmt
+      run: 'rustup toolchain install ${{ env.MAC_RUST_VERSION }}
+
+        rustup default ${{ env.MAC_RUST_VERSION }}
+
+        rustup target add x86_64-apple-darwin
+
+        rustup component add rustfmt'
     - uses: Swatinem/rust-cache@v2
       with:
         prefix-key: macos-13-intel
@@ -376,6 +379,11 @@ jobs:
         # Force build.py to build x86_64 regardless of host machine\nsed -i -e \"\
         s/mac_arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64')\
         \ else 'x86_64'/mac_arch = 'x86_64'/g\" build.py\n"
+    - name: Create cargo wrapper for cross-compilation
+      run: "cat << 'EOF' > cargo\n#!/bin/bash\nif [[ \"$*\" == *\"build\"* ]]; then\n\
+        \  ~/.cargo/bin/cargo \"$@\" --target x86_64-apple-darwin\n  mkdir -p target/release\n\
+        \  cp -a target/x86_64-apple-darwin/release/* target/release/ || true\nelse\n\
+        \  ~/.cargo/bin/cargo \"$@\"\nfi\nEOF\nchmod +x cargo\necho \"$PWD\" >> $GITHUB_PATH\n"
     - name: Build macOS Intel
       env:
         MACOSX_DEPLOYMENT_TARGET: '12.3'
