@@ -128,7 +128,10 @@ jobs:
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
-          mv -Force windows-x64-release/* C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+          $flutterRoot = (Get-Command flutter).Source | Split-Path -Parent | Split-Path -Parent
+          $engineDir = "$flutterRoot\bin\cache\artifacts\engine\windows-x64-release"
+          if (-not (Test-Path $engineDir)) { New-Item -ItemType Directory -Force -Path $engineDir }
+          mv -Force windows-x64-release\* $engineDir\
 
       - name: Patch Flutter (dropdown menu fix for 3.24.5)
         shell: bash
