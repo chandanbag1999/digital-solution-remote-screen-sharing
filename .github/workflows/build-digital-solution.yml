@@ -19,7 +19,8 @@ env:
 jobs:
 
   # ════════════════════════════════════════════════════════════
-  # JOB 1: Generate Flutter-Rust Bridge (required by all jobs)
+  # JOB 1: Generate Flutter-Rust Bridge
+  # Copied exactly from bridge.yml
   # ════════════════════════════════════════════════════════════
   generate-bridge:
     name: Generate Flutter-Rust Bridge
@@ -27,6 +28,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
+          sudo apt-get install ca-certificates -y
           sudo apt-get update -y
           sudo apt-get install -y \
             clang cmake curl gcc git g++ \
@@ -56,15 +58,17 @@ jobs:
           cache: true
 
       - name: Install bridge codegen tools
+        shell: bash
         run: |
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
           cargo install flutter_rust_bridge_codegen \
             --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} \
             --features "uuid" --locked
+          # extended_text 14 needs newer Dart; downgrade for 3.22.3
           sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
           pushd flutter && flutter pub get && popd
 
-      - name: Generate bridge files
+      - name: Run flutter_rust_bridge_codegen
         run: |
           ~/.cargo/bin/flutter_rust_bridge_codegen \
             --rust-input ./src/flutter_ffi.rs \
@@ -85,10 +89,11 @@ jobs:
             ./flutter/ios/Runner/bridge_generated.h
 
   # ════════════════════════════════════════════════════════════
-  # JOB 2: Windows x64 (.exe installer)
+  # JOB 2: Windows x64
+  # Copied from flutter-build.yml Windows job (x86_64 matrix entry)
   # ════════════════════════════════════════════════════════════
   build-windows:
-    name: Windows x64 (.exe)
+    name: Windows x64
     needs: generate-bridge
     runs-on: windows-2022
     steps:
@@ -104,12 +109,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Restore bridge files
-        uses: actions/download-artifact@v4
-        with:
-          name: bridge-artifact
-          path: ./
-
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         uses: KyleMayes/install-llvm-action@v2
         with:
@@ -118,8 +117,25 @@ jobs:
       - name: Install Flutter ${{ env.FLUTTER_VERSION }}
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Replace Flutter engine with RustDesk custom engine (x64)
+        # Fixes https://github.com/flutter/flutter/issues/155685
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          mv -Force windows-x64-release/* C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+
+      - name: Patch Flutter (dropdown menu fix for 3.24.5)
+        shell: bash
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
+          cd $(dirname $(dirname $(which flutter)))
+          [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
 
       - name: Install Rust ${{ env.RUST_VERSION }}
         uses: dtolnay/rust-toolchain@v1
@@ -131,6 +147,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: windows-2022
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./
 
       - name: Setup vcpkg at C:\vcpkg
         uses: lukka/run-vcpkg@v11
@@ -158,24 +180,41 @@ jobs:
         shell: bash
         run: echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
 
-      - name: Build Windows installer
+      - name: Build Windows (skip-portable-pack, get folder first)
         env:
           VCPKG_ROOT: C:\vcpkg
         run: |
-          python3 .\build.py --portable --flutter --hwcodec --vram
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
+          Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
+          mv -Force .\usbmmidd_v2 ./rustdesk
+
+      - name: Build self-extracting .exe installer
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          popd
+          mkdir -p ./SignOutput
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/DigitalSolution-windows-x64.exe
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: digital-solution-windows-x64
-          path: |
-            flutter/build/windows/x64/runner/Release/
+          name: digital-solution-windows-x64-exe
+          path: ./SignOutput/DigitalSolution-windows-x64.exe
 
   # ════════════════════════════════════════════════════════════
-  # JOB 3: macOS Apple Silicon arm64 (M1/M2/M3)
+  # JOB 3: macOS Apple Silicon (arm64 / M1 M2 M3)
+  # Copied from flutter-build.yml macOS job (aarch64-apple-darwin)
   # ════════════════════════════════════════════════════════════
   build-macos-arm64:
-    name: macOS arm64 (Apple Silicon)
+    name: macOS Apple Silicon (arm64)
     needs: generate-bridge
     runs-on: macos-14
     steps:
@@ -201,20 +240,41 @@ jobs:
         with:
           prefix-key: macos-14-arm64
 
-      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-
-      - name: Install system tools + NASM 2.x
+      - name: Install build runtime
         run: |
-          brew install pkg-config create-dmg yasm
-          # Brew installs NASM 3.x which breaks aom/ffmpeg - must use 2.x
+          brew install llvm create-dmg
+          if command -v pkg-config &>/dev/null; then
+            echo "pkg-config already installed"
+          else
+            brew install pkg-config
+          fi
+
+      - name: Install NASM 2.16.03
+        # MUST use NASM 2.x - brew installs 3.x which breaks aom/ffmpeg
+        run: |
           wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
           unzip nasm-2.16.03-macosx.zip
           sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
           nasm --version
+
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter (dropdown fix for 3.24.5)
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Flutter workaround (scheduler binding issue #133533)
+        shell: bash
+        run: |
+          cd "$(dirname "$(which flutter)")"
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' \
+            ../packages/flutter/lib/src/scheduler/binding.dart
+          grep -n '_setFramesEnabledState' ../packages/flutter/lib/src/scheduler/binding.dart || true
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -222,7 +282,7 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
 
-      - name: Install vcpkg dependencies for macOS arm64
+      - name: Install vcpkg dependencies
         run: |
           if ! $VCPKG_ROOT/vcpkg \
             install \
@@ -236,10 +296,10 @@ jobs:
       - name: Persist VCPKG_ROOT to GITHUB_ENV
         run: echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
 
-      - name: Patch macOS deployment target to 12.3 (all 4 required files)
+      - name: Patch macOS deployment target to 12.3 (all 4 files)
         run: |
           MIN_VER="12.3"
-          # 1. build.py cargo command MACOSX_DEPLOYMENT_TARGET
+          # 1. build.py - cargo MACOSX_DEPLOYMENT_TARGET env
           sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_VER}/" build.py
           # 2. CocoaPods Podfile
           sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_VER}'/" flutter/macos/Podfile
@@ -249,13 +309,13 @@ jobs:
           sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_VER};/" \
             flutter/macos/Runner.xcodeproj/project.pbxproj
 
-      - name: Build macOS arm64 app
+      - name: Build macOS arm64
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.3"
         run: |
           ./build.py --flutter --hwcodec --unix-file-copy-paste
 
-      - name: Create DMG for Apple Silicon
+      - name: Create DMG (Apple Silicon)
         run: |
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
@@ -265,20 +325,21 @@ jobs:
             --hide-extension "RustDesk.app" \
             --window-size 800 400 \
             --app-drop-link 600 185 \
-            DigitalSolution-AppleSilicon-arm64.dmg \
+            DigitalSolution-macOS-AppleSilicon-arm64.dmg \
             ./flutter/build/macos/Build/Products/Release/RustDesk.app || true
 
       - name: Upload macOS arm64 DMG
         uses: actions/upload-artifact@v4
         with:
-          name: digital-solution-macos-arm64-AppleSilicon
+          name: digital-solution-macos-AppleSilicon-arm64
           path: "*.dmg"
 
   # ════════════════════════════════════════════════════════════
-  # JOB 4: macOS Intel x86_64
+  # JOB 4: macOS Intel (x86_64)
+  # Copied from flutter-build.yml macOS job (x86_64-apple-darwin)
   # ════════════════════════════════════════════════════════════
   build-macos-intel:
-    name: macOS x86_64 (Intel Mac)
+    name: macOS Intel (x86_64)
     needs: generate-bridge
     runs-on: macos-13
     steps:
@@ -304,19 +365,40 @@ jobs:
         with:
           prefix-key: macos-13-intel
 
-      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-
-      - name: Install system tools + NASM 2.x
+      - name: Install build runtime
         run: |
-          brew install pkg-config create-dmg yasm
+          brew install llvm create-dmg
+          if command -v pkg-config &>/dev/null; then
+            echo "pkg-config already installed"
+          else
+            brew install pkg-config
+          fi
+
+      - name: Install NASM 2.16.03
+        run: |
           wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
           unzip nasm-2.16.03-macosx.zip
           sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
           nasm --version
+
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter (dropdown fix for 3.24.5)
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Flutter workaround (scheduler binding issue #133533)
+        shell: bash
+        run: |
+          cd "$(dirname "$(which flutter)")"
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' \
+            ../packages/flutter/lib/src/scheduler/binding.dart
+          grep -n '_setFramesEnabledState' ../packages/flutter/lib/src/scheduler/binding.dart || true
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -324,7 +406,7 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
 
-      - name: Install vcpkg dependencies for macOS x64
+      - name: Install vcpkg dependencies
         run: |
           if ! $VCPKG_ROOT/vcpkg \
             install \
@@ -338,7 +420,7 @@ jobs:
       - name: Persist VCPKG_ROOT to GITHUB_ENV
         run: echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
 
-      - name: Patch macOS deployment target to 12.3 (all 4 required files)
+      - name: Patch macOS deployment target to 12.3 (all 4 files)
         run: |
           MIN_VER="12.3"
           sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_VER}/" build.py
@@ -347,13 +429,13 @@ jobs:
           sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_VER};/" \
             flutter/macos/Runner.xcodeproj/project.pbxproj
 
-      - name: Build macOS Intel app
+      - name: Build macOS Intel
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.3"
         run: |
           ./build.py --flutter --hwcodec --unix-file-copy-paste
 
-      - name: Create DMG for Intel Mac
+      - name: Create DMG (Intel)
         run: |
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
@@ -363,32 +445,53 @@ jobs:
             --hide-extension "RustDesk.app" \
             --window-size 800 400 \
             --app-drop-link 600 185 \
-            DigitalSolution-Intel-x86_64.dmg \
+            DigitalSolution-macOS-Intel-x86_64.dmg \
             ./flutter/build/macos/Build/Products/Release/RustDesk.app || true
 
       - name: Upload macOS Intel DMG
         uses: actions/upload-artifact@v4
         with:
-          name: digital-solution-macos-intel-x86_64
+          name: digital-solution-macos-Intel-x86_64
           path: "*.dmg"
 
   # ════════════════════════════════════════════════════════════
   # JOB 5: Android arm64 APK
+  # Copied from flutter-build.yml Android job (aarch64-linux-android)
   # ════════════════════════════════════════════════════════════
   build-android:
     name: Android arm64 APK
     needs: generate-bridge
     runs-on: ubuntu-22.04
     steps:
-      - name: Install system dependencies BEFORE vcpkg
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache env vars
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install system dependencies (BEFORE vcpkg - nasm required for aom)
         run: |
-          sudo apt-get update -y
+          sudo apt-get update
           sudo apt-get install -y \
+            clang cmake curl \
+            gcc-multilib g++ g++-multilib \
+            libclang-dev \
             nasm yasm \
-            clang libclang-dev \
-            libssl-dev pkg-config \
+            ninja-build pkg-config \
             openjdk-17-jdk-headless \
-            ninja-build wget
+            wget
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -416,8 +519,7 @@ jobs:
           doNotCache: false
 
       - name: Install vcpkg dependencies for Android arm64
-        # Uses RustDesk's build_android_deps.sh which correctly passes
-        # --triplet arm64-android and overlay-triplets from vcpkg-configuration.json
+        # Uses RustDesk's build_android_deps.sh - correctly passes --triplet arm64-android
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           VCPKG_ROOT: /opt/artifacts/vcpkg
@@ -453,9 +555,14 @@ jobs:
           flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
           channel: stable
 
+      - name: Patch Flutter for Android (dropdown fix)
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          [[ "3.24.5" == "${{ env.ANDROID_FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+
       - name: Build Rust library for Android arm64
-        # Uses RustDesk's ndk_arm64.sh: cargo ndk --platform 21 --target aarch64-linux-android
-        # build --locked --release --features flutter,hwcodec
+        # Uses RustDesk's ndk_arm64.sh exactly:
+        # cargo ndk --platform 21 --target aarch64-linux-android build --locked --release --features flutter,hwcodec
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -468,7 +575,7 @@ jobs:
           cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
              ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
 
-      - name: Build Flutter APK (Android arm64)
+      - name: Build Flutter APK
         run: |
           cd flutter
           flutter pub get
@@ -477,5 +584,5 @@ jobs:
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
-          name: digital-solution-android-arm64
+          name: digital-solution-android-arm64-apk
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
