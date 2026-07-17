@@ -194,6 +194,9 @@ jobs:
       - name: Install NDK specific version
         run: sdkmanager "ndk;27.3.13750724"
 
+      - name: Export NDK path
+        run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version "3.1.2" --locked
 
@@ -213,6 +216,8 @@ jobs:
 
       - name: Build Rust for Android
         run: |
+          export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
+          echo "Using NDK: $ANDROID_NDK_HOME"
           cargo ndk \
             -t aarch64-linux-android \
             -t armv7-linux-androideabi \
@@ -221,7 +226,6 @@ jobs:
             build --release
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
 
       - name: Build Flutter APK
         run: flutter build apk --release
