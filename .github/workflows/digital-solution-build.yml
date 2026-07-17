@@ -119,11 +119,12 @@ jobs:
       - name: Install vcpkg dependencies (macOS)
         run: |
           ${{ github.workspace }}/vcpkg/vcpkg install \
-            --triplet ${{ matrix.vcpkg_triplet }} \
             --overlay-ports=res/vcpkg \
             --overlay-triplets=res/vcpkg-triplets
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+          VCPKG_DEFAULT_TRIPLET: ${{ matrix.vcpkg_triplet }}
+          VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.vcpkg_triplet }}
 
       - name: Flutter pub get
         run: flutter pub get
@@ -133,6 +134,8 @@ jobs:
         run: cargo build --release --target ${{ matrix.rust_target }}
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+          VCPKG_DEFAULT_TRIPLET: ${{ matrix.vcpkg_triplet }}
+          VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.vcpkg_triplet }}
 
       - name: Build Flutter macOS
         run: flutter build macos --release
@@ -203,7 +206,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev nasm yasm libssl-dev
+          sudo apt-get install -y \
+            libclang-dev nasm yasm libssl-dev \
+            gcc-multilib g++-multilib \
+            libc6-dev-i386
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -226,6 +232,8 @@ jobs:
             build --release
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          LIBCLANG_PATH: /usr/lib/llvm-14/lib
 
       - name: Build Flutter APK
         run: flutter build apk --release
