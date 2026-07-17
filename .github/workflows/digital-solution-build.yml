@@ -38,9 +38,13 @@ jobs:
 
       - name: Install vcpkg dependencies (Windows)
         run: |
-          $env:VCPKG_ROOT = "${{ github.workspace }}\vcpkg"
-          & "$env:VCPKG_ROOT\vcpkg.exe" install opus libjpeg-turbo libvpx libyuv aom --triplet x64-windows-static
+          ${{ github.workspace }}\vcpkg\vcpkg.exe install `
+            --triplet x64-windows-static `
+            --overlay-ports=res\vcpkg `
+            --overlay-triplets=res\vcpkg-triplets
         shell: powershell
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg
 
       - name: Flutter pub get
         run: flutter pub get
@@ -114,7 +118,10 @@ jobs:
 
       - name: Install vcpkg dependencies (macOS)
         run: |
-          ${{ github.workspace }}/vcpkg/vcpkg install opus libjpeg-turbo libvpx libyuv aom --triplet ${{ matrix.vcpkg_triplet }}
+          ${{ github.workspace }}/vcpkg/vcpkg install \
+            --triplet ${{ matrix.vcpkg_triplet }} \
+            --overlay-ports=res/vcpkg \
+            --overlay-triplets=res/vcpkg-triplets
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
