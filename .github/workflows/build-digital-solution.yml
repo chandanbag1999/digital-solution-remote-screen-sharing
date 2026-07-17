@@ -1,6 +1,6 @@
 name: Digital Solution Build
-true:
-  workflow_dispatch: null
+on:
+  workflow_dispatch:
 env:
   RUST_VERSION: '1.75'
   MAC_RUST_VERSION: '1.81'
