@@ -313,11 +313,10 @@ jobs:
         name: bridge-artifact
         path: ./
     - name: Install Rust ${{ env.MAC_RUST_VERSION }}
-      run: 'rustup toolchain install ${{ env.MAC_RUST_VERSION }}-x86_64-apple-darwin
-
+      run: |
+        rustup toolchain install ${{ env.MAC_RUST_VERSION }}-x86_64-apple-darwin --force-non-host
         rustup default ${{ env.MAC_RUST_VERSION }}-x86_64-apple-darwin
-
-        rustup component add rustfmt'
+        rustup component add rustfmt
     - uses: Swatinem/rust-cache@v2
       with:
         prefix-key: macos-13-intel
