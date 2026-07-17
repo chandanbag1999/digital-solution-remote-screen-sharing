@@ -1,0 +1,271 @@
+name: Digital Solution Build
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: "1.75"
+  MAC_RUST_VERSION: "1.81"
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  CARGO_NDK_VERSION: "3.1.2"
+  NDK_VERSION: "r28c"
+
+jobs:
+
+  # ─────────────────────── WINDOWS x64 ───────────────────────
+  build-windows:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+      - name: Export GitHub Actions cache env
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-2022
+
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "15.0.6"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install vcpkg dependencies
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        shell: bash
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --triplet x64-windows-static \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
+              echo "$f:"; cat "$f"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Persist VCPKG_ROOT
+        shell: bash
+        run: echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Generate bridge (if not restored)
+        shell: bash
+        run: |
+          if [ ! -f "flutter/lib/generated_bridge.dart" ]; then
+            flutter pub global activate flutter_rust_bridge_codegen 1.80.1 || true
+            flutter pub get --directory flutter || true
+          fi
+        continue-on-error: true
+
+      - name: Build Windows
+        env:
+          VCPKG_ROOT: C:\vcpkg
+        run: |
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digital-solution-windows-x64
+          path: flutter/build/windows/x64/runner/Release/
+
+  # ─────────────────────── macOS arm64 ───────────────────────
+  build-macos:
+    name: macOS arm64
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.MAC_RUST_VERSION }}
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: macos-14
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - name: Install system tools
+        run: brew install nasm yasm pkg-config create-dmg
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
+              echo "$f:"; cat "$f"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Persist VCPKG_ROOT
+        run: echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
+
+      - name: Build macOS
+        run: |
+          if [ "aarch64-apple-darwin" = "aarch64-apple-darwin" ]; then
+            MIN_MACOS_VERSION="12.3"
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+          fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste
+
+      - name: Create DMG
+        run: |
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          create-dmg \
+            --icon "RustDesk.app" 200 190 \
+            --hide-extension "RustDesk.app" \
+            --window-size 800 400 \
+            --app-drop-link 600 185 \
+            DigitalSolution-arm64.dmg \
+            ./flutter/build/macos/Build/Products/Release/RustDesk.app || true
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digital-solution-macos-arm64
+          path: "*.dmg"
+
+  # ─────────────────────── ANDROID arm64 ───────────────────────
+  build-android:
+    name: Android arm64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install vcpkg dependencies (Android)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        shell: bash
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
+              echo "$f:"; cat "$f"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: android-arm64
+          key: aarch64-linux-android
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - name: Install system libs
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libclang-dev
+
+      - name: Build Rust lib (arm64)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          VCPKG_ROOT: /opt/artifacts/vcpkg
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/ndk_arm64.sh
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
+             ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+
+      - name: Build Flutter APK
+        run: |
+          cd flutter
+          flutter pub get
+          flutter build apk --release --target-platform android-arm64
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digital-solution-android-arm64
+          path: flutter/build/app/outputs/flutter-apk/app-release.apk
