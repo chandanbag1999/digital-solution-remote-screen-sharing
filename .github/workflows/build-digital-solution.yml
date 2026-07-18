@@ -241,7 +241,6 @@ jobs:
       with:
         name: digital-solution-windows-x64-exe
         path: ./SignOutput/DigitalSolution-windows-x64.exe
-    if: false
   build-macos-arm64:
     name: macOS Apple Silicon (arm64)
     needs: generate-bridge
@@ -335,7 +334,6 @@ jobs:
       with:
         name: digital-solution-macos-AppleSilicon-arm64
         path: '*.dmg'
-    if: false
   build-macos-intel:
     name: macOS Intel (x86_64 cross on M1)
     needs: generate-bridge
@@ -584,3 +582,4 @@ jobs:
       with:
         name: digital-solution-android-arm64-apk
         path: flutter/build/app/outputs/flutter-apk/app-release.apk
+    if: false
