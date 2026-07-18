@@ -26,6 +26,25 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+    - name: Patch default view/scroll style in hbb_common config
+      shell: bash
+      run: '# Change default view style from ''original'' to ''adaptive'' (fit to
+        window)
+
+        sed -i -e "s/self.get_string(key, \"original\", vec!\[\"adaptive\"\])/self.get_string(key,
+        \"adaptive\", vec![\"original\"])/g" libs/hbb_common/src/config.rs
+
+        # Change default scroll style from ''scrollauto'' to ''scrollbar'' (no auto-pan)
+
+        sed -i -e "s/self.get_string(key, \"scrollauto\", vec!\[\"scrolledge\", \"scrollbar\"\])/self.get_string(key,
+        \"scrollbar\", vec![\"scrollauto\", \"scrolledge\"])/g" libs/hbb_common/src/config.rs
+
+        echo ''Patch applied. Verifying:''
+
+        grep -n ''OPTION_VIEW_STYLE\|OPTION_SCROLL_STYLE'' libs/hbb_common/src/config.rs
+        | grep get_string
+
+        '
     - name: Install Rust ${{ env.RUST_VERSION }} with rustfmt
       uses: dtolnay/rust-toolchain@v1
       with:
@@ -88,6 +107,25 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+    - name: Patch default view/scroll style in hbb_common config
+      shell: bash
+      run: '# Change default view style from ''original'' to ''adaptive'' (fit to
+        window)
+
+        sed -i -e "s/self.get_string(key, \"original\", vec!\[\"adaptive\"\])/self.get_string(key,
+        \"adaptive\", vec![\"original\"])/g" libs/hbb_common/src/config.rs
+
+        # Change default scroll style from ''scrollauto'' to ''scrollbar'' (no auto-pan)
+
+        sed -i -e "s/self.get_string(key, \"scrollauto\", vec!\[\"scrolledge\", \"scrollbar\"\])/self.get_string(key,
+        \"scrollbar\", vec![\"scrollauto\", \"scrolledge\"])/g" libs/hbb_common/src/config.rs
+
+        echo ''Patch applied. Verifying:''
+
+        grep -n ''OPTION_VIEW_STYLE\|OPTION_SCROLL_STYLE'' libs/hbb_common/src/config.rs
+        | grep get_string
+
+        '
     - name: Install LLVM ${{ env.LLVM_VERSION }}
       uses: KyleMayes/install-llvm-action@v2
       with:
@@ -307,6 +345,25 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+    - name: Patch default view/scroll style in hbb_common config
+      shell: bash
+      run: '# Change default view style from ''original'' to ''adaptive'' (fit to
+        window)
+
+        sed -i -e "s/self.get_string(key, \"original\", vec!\[\"adaptive\"\])/self.get_string(key,
+        \"adaptive\", vec![\"original\"])/g" libs/hbb_common/src/config.rs
+
+        # Change default scroll style from ''scrollauto'' to ''scrollbar'' (no auto-pan)
+
+        sed -i -e "s/self.get_string(key, \"scrollauto\", vec!\[\"scrolledge\", \"scrollbar\"\])/self.get_string(key,
+        \"scrollbar\", vec![\"scrollauto\", \"scrolledge\"])/g" libs/hbb_common/src/config.rs
+
+        echo ''Patch applied. Verifying:''
+
+        grep -n ''OPTION_VIEW_STYLE\|OPTION_SCROLL_STYLE'' libs/hbb_common/src/config.rs
+        | grep get_string
+
+        '
     - name: Restore bridge files
       uses: actions/download-artifact@v4
       with:
@@ -435,6 +492,25 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+    - name: Patch default view/scroll style in hbb_common config
+      shell: bash
+      run: '# Change default view style from ''original'' to ''adaptive'' (fit to
+        window)
+
+        sed -i -e "s/self.get_string(key, \"original\", vec!\[\"adaptive\"\])/self.get_string(key,
+        \"adaptive\", vec![\"original\"])/g" libs/hbb_common/src/config.rs
+
+        # Change default scroll style from ''scrollauto'' to ''scrollbar'' (no auto-pan)
+
+        sed -i -e "s/self.get_string(key, \"scrollauto\", vec!\[\"scrolledge\", \"scrollbar\"\])/self.get_string(key,
+        \"scrollbar\", vec![\"scrollauto\", \"scrolledge\"])/g" libs/hbb_common/src/config.rs
+
+        echo ''Patch applied. Verifying:''
+
+        grep -n ''OPTION_VIEW_STYLE\|OPTION_SCROLL_STYLE'' libs/hbb_common/src/config.rs
+        | grep get_string
+
+        '
     - name: Restore bridge files
       uses: actions/download-artifact@v4
       with:
