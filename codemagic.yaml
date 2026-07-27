@@ -4,6 +4,8 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 120
     environment:
+      # NOTE: flutter version below is for the MAIN build (3.24.5)
+      # Bridge codegen uses Flutter 3.22.3 installed manually in scripts
       flutter: "3.24.5"
       vars:
         MAC_RUST_VERSION: "1.81.0"
@@ -17,25 +19,30 @@ workflows:
         - $HOME/.cargo/git
         - /Users/builder/vcpkg/installed
     scripts:
-      # STEP 1: Checkout submodules
-      - name: Initialize submodules
+      # ─────────────────────────────────────────────────────────
+      # STEP 1: Checkout with submodules
+      # ─────────────────────────────────────────────────────────
+      - name: Checkout with submodules
         script: |
           git submodule sync --recursive
           git submodule update --init --force --recursive
 
-      # STEP 2: Install Rust and persist PATH to $CM_ENV
-      # CRITICAL: In Codemagic, each step runs in a new shell.
-      # We MUST write the cargo bin path to $CM_ENV so it persists for ALL future steps.
-      - name: Install Rust and persist PATH
+      # ─────────────────────────────────────────────────────────
+      # STEP 2: Install Rust + persist cargo PATH via $CM_ENV
+      # CRITICAL: Codemagic runs each step in a NEW shell.
+      # Writing to $CM_ENV is the ONLY way to persist PATH across steps.
+      # ─────────────────────────────────────────────────────────
+      - name: Install Rust and persist cargo PATH
         script: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain $MAC_RUST_VERSION
           source "$HOME/.cargo/env"
           rustup target add aarch64-apple-darwin
           rustup component add rustfmt
-          # Persist cargo to PATH for ALL subsequent steps (Codemagic official method)
           echo "PATH=$HOME/.cargo/bin:$PATH" >> $CM_ENV
 
-      # STEP 3: Install system dependencies (brew)
+      # ─────────────────────────────────────────────────────────
+      # STEP 3: System dependencies via Homebrew
+      # ─────────────────────────────────────────────────────────
       - name: Install system dependencies
         script: |
           brew install llvm create-dmg
@@ -43,7 +50,9 @@ workflows:
             brew install pkg-config
           fi
 
-      # STEP 4: Install NASM
+      # ─────────────────────────────────────────────────────────
+      # STEP 4: NASM (required for Rust/C compilation)
+      # ─────────────────────────────────────────────────────────
       - name: Install NASM 2.16.03
         script: |
           wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
@@ -51,14 +60,71 @@ workflows:
           sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
           nasm --version
 
+      # ─────────────────────────────────────────────────────────
       # STEP 5: Install bridge codegen tools
-      # cargo is now available via $CM_ENV PATH set above
+      # cargo PATH is now available via $CM_ENV from Step 2
+      # ─────────────────────────────────────────────────────────
       - name: Install Bridge Codegen Tools
         script: |
           cargo install cargo-expand --version $CARGO_EXPAND_VERSION --locked
           cargo install flutter_rust_bridge_codegen --version $FLUTTER_RUST_BRIDGE_VERSION --features "uuid" --locked
 
-      # STEP 6: Setup vcpkg (using /Users/builder/vcpkg as stable path)
+      # ─────────────────────────────────────────────────────────
+      # STEP 6: Generate Flutter-Rust Bridge files
+      # GitHub Actions does this on Linux with Flutter 3.22.3.
+      # We do it here on macOS with the same Flutter 3.22.3 (temporary install).
+      # This generates: src/bridge_generated.rs, src/bridge_generated.io.rs,
+      #   flutter/lib/generated_bridge.dart, flutter/lib/generated_bridge.freezed.dart,
+      #   flutter/macos/Runner/bridge_generated.h, flutter/ios/Runner/bridge_generated.h
+      # ─────────────────────────────────────────────────────────
+      - name: Generate Flutter-Rust Bridge
+        script: |
+          # Temporarily install Flutter 3.22.3 for bridge codegen
+          # (codegen is compatible with 3.22.3, not needed with 3.24.5)
+          git clone --depth 1 --branch 3.22.3 https://github.com/flutter/flutter.git /tmp/flutter-3.22.3
+          export PATH="/tmp/flutter-3.22.3/bin:$PATH"
+          flutter --version
+
+          # Patch pubspec for flutter 3.22.3 compatibility
+          python3 -c "
+          with open('flutter/pubspec.yaml', 'r') as f: c = f.read()
+          with open('flutter/pubspec.yaml', 'w') as f: f.write(c.replace('extended_text: 14.0.0', 'extended_text: 13.0.0'))
+          print('pubspec.yaml patched for Flutter 3.22.3')
+          "
+          cd flutter && flutter pub get && cd ..
+
+          # Run bridge codegen using full path (avoids PATH issues)
+          ~/.cargo/bin/flutter_rust_bridge_codegen \
+            --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./flutter/macos/Runner/bridge_generated.h
+
+          # Copy header for iOS too
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+          # Verify generated files exist
+          echo "Verifying generated bridge files..."
+          ls -la src/bridge_generated.rs src/bridge_generated.io.rs \
+            flutter/lib/generated_bridge.dart \
+            flutter/macos/Runner/bridge_generated.h
+
+          # Restore pubspec for Flutter 3.24.5 build
+          python3 -c "
+          with open('flutter/pubspec.yaml', 'r') as f: c = f.read()
+          with open('flutter/pubspec.yaml', 'w') as f: f.write(c.replace('extended_text: 13.0.0', 'extended_text: 14.0.0'))
+          print('pubspec.yaml restored for Flutter 3.24.5')
+          "
+
+      # ─────────────────────────────────────────────────────────
+      # STEP 7: Flutter pub get with 3.24.5 (main build flutter)
+      # ─────────────────────────────────────────────────────────
+      - name: Flutter pub get (3.24.5)
+        script: |
+          cd flutter && flutter pub get
+
+      # ─────────────────────────────────────────────────────────
+      # STEP 8: Setup vcpkg
+      # ─────────────────────────────────────────────────────────
       - name: Setup vcpkg
         script: |
           if [ ! -d "$VCPKG_ROOT" ]; then
@@ -69,50 +135,34 @@ workflows:
           git checkout $VCPKG_COMMIT_ID
           ./bootstrap-vcpkg.sh -disableMetrics
           $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"
-          # Persist VCPKG_ROOT for subsequent steps
           echo "VCPKG_ROOT=$VCPKG_ROOT" >> $CM_ENV
 
-      # STEP 7: Generate Flutter-Rust Bridge
-      # Uses flutter_rust_bridge_codegen from cargo bin (persisted via $CM_ENV)
-      - name: Generate Flutter-Rust Bridge
-        script: |
-          flutter_rust_bridge_codegen \
-            --rust-input ./src/flutter_ffi.rs \
-            --dart-output ./flutter/lib/generated_bridge.dart \
-            --c-output ./flutter/macos/Runner/bridge_generated.h
-          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
-
-      # STEP 8: Flutter pub get with extended_text downgrade
-      - name: Flutter pub get
-        script: |
-          python3 -c "
-          with open('flutter/pubspec.yaml', 'r') as f: c = f.read()
-          with open('flutter/pubspec.yaml', 'w') as f: f.write(c.replace('extended_text: 14.0.0', 'extended_text: 13.0.0'))
-          print('pubspec.yaml patched')
-          "
-          cd flutter && flutter pub get
-
-      # STEP 9: Apply all codebase patches using Python (macOS sed differs from Linux, Python is safe)
-      - name: Apply codebase patches
+      # ─────────────────────────────────────────────────────────
+      # STEP 9: Apply all codebase patches (Python - 100% macOS safe)
+      # ─────────────────────────────────────────────────────────
+      - name: Apply all codebase patches
         script: |
           python3 << 'PYEOF'
-          import re
+          import re, subprocess, os, sys
 
-          def rp(filepath, old, new):
+          def rp(filepath, old, new, required=True):
               try:
                   with open(filepath, 'r', encoding='utf-8') as f:
                       content = f.read()
                   if old in content:
                       with open(filepath, 'w', encoding='utf-8') as f:
                           f.write(content.replace(old, new))
-                      print(f"Patched: {filepath}")
+                      print(f"  OK: {filepath}")
                   else:
-                      print(f"WARNING: pattern not found in {filepath}: {old[:60]}")
+                      msg = f"  WARN: pattern not found in {filepath}: ...{old[:50]}..."
+                      print(msg)
+                      if required:
+                          print("  This is a required patch - if build fails, check this file manually.")
               except Exception as e:
-                  print(f"ERROR in {filepath}: {e}")
-                  raise
+                  print(f"  ERROR in {filepath}: {e}")
+                  sys.exit(1)
 
-          def rp_regex(filepath, pattern, replacement):
+          def rp_regex(filepath, pattern, replacement, required=True):
               try:
                   with open(filepath, 'r', encoding='utf-8') as f:
                       content = f.read()
@@ -120,40 +170,33 @@ workflows:
                   if count > 0:
                       with open(filepath, 'w', encoding='utf-8') as f:
                           f.write(new_content)
-                      print(f"Patched {count} occurrence(s): {filepath}")
+                      print(f"  OK [{count} match]: {filepath}")
                   else:
-                      print(f"WARNING: regex not found in {filepath}: {pattern[:60]}")
+                      print(f"  WARN: no regex match in {filepath}: {pattern[:50]}")
+                      if required:
+                          print("  This is a required patch - if build fails, check this file manually.")
               except Exception as e:
-                  print(f"ERROR in {filepath}: {e}")
-                  raise
+                  print(f"  ERROR in {filepath}: {e}")
+                  sys.exit(1)
 
           MIN_VER = "12.3"
 
-          # 1. build.py - MACOSX_DEPLOYMENT_TARGET
+          print("=== Deployment Target Patches ===")
           rp_regex('build.py', r'MACOSX_DEPLOYMENT_TARGET=[0-9]+\.[0-9]+', f'MACOSX_DEPLOYMENT_TARGET={MIN_VER}')
-
-          # 2. CocoaPods Podfile
           rp_regex('flutter/macos/Podfile', r"platform :osx, '[^']*'", f"platform :osx, '{MIN_VER}'")
-
-          # 3. Cargo.toml
           rp_regex('Cargo.toml', r'osx_minimum_system_version = "[0-9]+\.[0-9]+"', f'osx_minimum_system_version = "{MIN_VER}"')
-
-          # 4. Xcode project.pbxproj
           rp_regex('flutter/macos/Runner.xcodeproj/project.pbxproj', r'MACOSX_DEPLOYMENT_TARGET = [0-9]+\.[0-9]+;', f'MACOSX_DEPLOYMENT_TARGET = {MIN_VER};')
 
-          # 5. Flutter scheduler binding fix (suppress _setFramesEnabledState error)
-          import subprocess, os
-          flutter_root = subprocess.check_output(['flutter', '--version', '--machine'], text=True)
-          # Use `which flutter` to find flutter root
+          print("=== Flutter Scheduler Binding Fix ===")
           flutter_bin = subprocess.check_output(['which', 'flutter'], text=True).strip()
-          flutter_pkg_root = os.path.join(os.path.dirname(os.path.dirname(flutter_bin)), 'packages')
-          binding_path = os.path.join(flutter_pkg_root, 'flutter', 'lib', 'src', 'scheduler', 'binding.dart')
+          flutter_dir = os.path.dirname(os.path.dirname(flutter_bin))
+          binding_path = os.path.join(flutter_dir, 'packages', 'flutter', 'lib', 'src', 'scheduler', 'binding.dart')
           if os.path.exists(binding_path):
-              rp(binding_path, '_setFramesEnabledState(false);', '//_setFramesEnabledState(false);')
+              rp(binding_path, '_setFramesEnabledState(false);', '//_setFramesEnabledState(false);', required=False)
           else:
-              print(f"WARNING: binding.dart not found at {binding_path}, skipping")
+              print(f"  WARN: binding.dart not found at {binding_path}, skipping")
 
-          # 6. hbb_common config patches (view style + scroll style defaults)
+          print("=== RustDesk UI Default Settings Patch ===")
           rp('libs/hbb_common/src/config.rs',
              'self.get_string(key, "original", vec!["adaptive"])',
              'self.get_string(key, "adaptive", vec!["original"])')
@@ -161,27 +204,32 @@ workflows:
              'self.get_string(key, "scrollauto", vec!["scrolledge", "scrollbar"])',
              'self.get_string(key, "scrollbar", vec!["scrollauto", "scrolledge"])')
 
-          print("All patches applied successfully.")
+          print("\nAll patches completed successfully.")
           PYEOF
 
-      # STEP 10: Build the macOS app using build.py
-      - name: Build macOS arm64 app
+      # ─────────────────────────────────────────────────────────
+      # STEP 10: Build macOS app
+      # ─────────────────────────────────────────────────────────
+      - name: Build macOS arm64
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.3"
         script: |
           python3 build.py --flutter --hwcodec --unix-file-copy-paste
 
+      # ─────────────────────────────────────────────────────────
       # STEP 11: Package into DMG
+      # ─────────────────────────────────────────────────────────
       - name: Create DMG
         script: |
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
-          # Patch create-dmg to fix unmounting issue (using python, not sed)
+          # Increase unmounting attempts (Python instead of sed - macOS safe)
           python3 -c "
           import sys
-          path = sys.argv[1]
-          with open(path, 'r') as f: c = f.read()
-          with open(path, 'w') as f: f.write(c.replace('MAXIMUM_UNMOUNTING_ATTEMPTS=3', 'MAXIMUM_UNMOUNTING_ATTEMPTS=7'))
+          p = sys.argv[1]
+          with open(p, 'r') as f: c = f.read()
+          with open(p, 'w') as f: f.write(c.replace('MAXIMUM_UNMOUNTING_ATTEMPTS=3', 'MAXIMUM_UNMOUNTING_ATTEMPTS=7'))
+          print('create-dmg patched')
           " "$CREATE_DMG"
           create-dmg \
             --icon "RustDesk.app" 200 190 \
