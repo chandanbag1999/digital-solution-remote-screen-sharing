@@ -1,5 +1,0 @@
-name: digital_solution_workspace
-description: Root workspace file for Codemagic build detection. Actual Flutter project is in flutter/ subdirectory.
-version: 1.0.0
-environment:
-  sdk: '>=3.0.0 <4.0.0'
