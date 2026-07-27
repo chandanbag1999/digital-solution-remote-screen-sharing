@@ -70,24 +70,43 @@ workflows:
       - name: Flutter prep and pub get
         script: |
           cd flutter
-          # Apply the flutter binding patch for 3.24.5
-          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
+          python3 -c "
+          with open('pubspec.yaml', 'r') as f: c = f.read()
+          with open('pubspec.yaml', 'w') as f: f.write(c.replace('extended_text: 14.0.0', 'extended_text: 13.0.0'))
+          "
           flutter pub get
-          # Patch flutter internal file to bypass rendering bug
-          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' \
-            $FLUTTER_ROOT/packages/flutter/lib/src/scheduler/binding.dart || true
+          python3 -c "
+          import os
+          p = os.path.expandvars('$FLUTTER_ROOT/packages/flutter/lib/src/scheduler/binding.dart')
+          try:
+              with open(p, 'r') as f: c = f.read()
+              with open(p, 'w') as f: f.write(c.replace('_setFramesEnabledState(false);', '//_setFramesEnabledState(false);'))
+          except Exception: pass
+          "
           
       - name: Apply codebase patches
         script: |
           MIN_VER="12.3"
-          sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_VER}/" build.py
-          sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_VER}'/" flutter/macos/Podfile
-          sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_VER}\"/" Cargo.toml
-          sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_VER};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+          python3 -c "
+          import sys
+          def rp(f, o, n):
+              try:
+                  with open(f, 'r') as file: c = file.read()
+                  with open(f, 'w') as file: file.write(c.replace(o, n))
+              except Exception as e: print(f'Err in {f}: {e}')
           
-          # Patch default view and scroll styles
-          sed -i -e "s/self.get_string(key, \"original\", vec!\[\"adaptive\"\])/self.get_string(key, \"adaptive\", vec![\"original\"])/g" libs/hbb_common/src/config.rs
-          sed -i -e "s/self.get_string(key, \"scrollauto\", vec!\[\"scrolledge\", \"scrollbar\"\])/self.get_string(key, \"scrollbar\", vec![\"scrollauto\", \"scrolledge\"])/g" libs/hbb_common/src/config.rs
+          rp('build.py', 'MACOSX_DEPLOYMENT_TARGET=10.14', f'MACOSX_DEPLOYMENT_TARGET={MIN_VER}')
+          rp('build.py', 'MACOSX_DEPLOYMENT_TARGET=10.15', f'MACOSX_DEPLOYMENT_TARGET={MIN_VER}')
+          rp('flutter/macos/Podfile', \"platform :osx, '10.14'\", f\"platform :osx, '{MIN_VER}'\")
+          rp('flutter/macos/Podfile', \"platform :osx, '10.15'\", f\"platform :osx, '{MIN_VER}'\")
+          rp('Cargo.toml', 'osx_minimum_system_version = \"10.14\"', f'osx_minimum_system_version = \"{MIN_VER}\"')
+          rp('Cargo.toml', 'osx_minimum_system_version = \"10.15\"', f'osx_minimum_system_version = \"{MIN_VER}\"')
+          rp('flutter/macos/Runner.xcodeproj/project.pbxproj', 'MACOSX_DEPLOYMENT_TARGET = 10.14;', f'MACOSX_DEPLOYMENT_TARGET = {MIN_VER};')
+          rp('flutter/macos/Runner.xcodeproj/project.pbxproj', 'MACOSX_DEPLOYMENT_TARGET = 10.15;', f'MACOSX_DEPLOYMENT_TARGET = {MIN_VER};')
+          
+          rp('libs/hbb_common/src/config.rs', 'self.get_string(key, \"original\", vec![\"adaptive\"])', 'self.get_string(key, \"adaptive\", vec![\"original\"])')
+          rp('libs/hbb_common/src/config.rs', 'self.get_string(key, \"scrollauto\", vec![\"scrolledge\", \"scrollbar\"])', 'self.get_string(key, \"scrollbar\", vec![\"scrollauto\", \"scrolledge\"])')
+          "
           
       - name: Build macOS App
         script: |
@@ -99,7 +118,12 @@ workflows:
         script: |
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
-          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          python3 -c "
+          import sys
+          f = sys.argv[1]
+          with open(f, 'r') as file: c = file.read()
+          with open(f, 'w') as file: file.write(c.replace('MAXIMUM_UNMOUNTING_ATTEMPTS=3', 'MAXIMUM_UNMOUNTING_ATTEMPTS=7'))
+          " "$CREATE_DMG"
           create-dmg \
             --icon "RustDesk.app" 200 190 \
             --hide-extension "RustDesk.app" \
