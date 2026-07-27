@@ -112,8 +112,21 @@ workflows:
           git fetch --depth=1 origin $VCPKG_COMMIT_ID
           git checkout $VCPKG_COMMIT_ID
           ./bootstrap-vcpkg.sh -disableMetrics
-          $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"
           echo "VCPKG_ROOT=$VCPKG_ROOT" >> $CM_ENV
+          # Run install from PROJECT ROOT so vcpkg reads vcpkg.json manifest
+          # vcpkg.json lists: opus, libvpx, libyuv, aom, libjpeg-turbo etc.
+          # overlay-triplets path is relative to project root (./res/vcpkg-triplets)
+          cd /Users/builder/clone
+          if ! $VCPKG_ROOT/vcpkg install \
+            --triplet arm64-osx \
+            --host-triplet arm64-osx \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            echo "=== vcpkg install failed. Dumping logs ==="
+            find "$VCPKG_ROOT/" -name "*.log" | while read -r f; do
+              echo "=== $f ==="; cat "$f"
+            done
+            exit 1
+          fi
 
       # ── STEP 9: Patch pubspec back to 14.0.0 for 3.24.5 build ─
       - name: Restore pubspec for Flutter 3.24.5 build
