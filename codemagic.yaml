@@ -10,119 +10,178 @@ workflows:
         FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
         CARGO_EXPAND_VERSION: "1.0.95"
         VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
-        MACOSX_DEPLOYMENT_TARGET: "12.3"
-        VCPKG_ROOT: "$CM_BUILD_DIR/vcpkg"
+        VCPKG_ROOT: "/Users/builder/vcpkg"
     cache:
       cache_paths:
         - $HOME/.cargo/registry
         - $HOME/.cargo/git
-        - $CM_BUILD_DIR/target
-        - $CM_BUILD_DIR/vcpkg/installed
+        - /Users/builder/vcpkg/installed
     scripts:
+      # STEP 1: Checkout submodules
       - name: Initialize submodules
         script: |
           git submodule sync --recursive
           git submodule update --init --force --recursive
-      
+
+      # STEP 2: Install Rust and persist PATH to $CM_ENV
+      # CRITICAL: In Codemagic, each step runs in a new shell.
+      # We MUST write the cargo bin path to $CM_ENV so it persists for ALL future steps.
+      - name: Install Rust and persist PATH
+        script: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain $MAC_RUST_VERSION
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-apple-darwin
+          rustup component add rustfmt
+          # Persist cargo to PATH for ALL subsequent steps (Codemagic official method)
+          echo "PATH=$HOME/.cargo/bin:$PATH" >> $CM_ENV
+
+      # STEP 3: Install system dependencies (brew)
       - name: Install system dependencies
         script: |
-          brew install llvm create-dmg pkg-config
-          
-      - name: Install NASM
+          brew install llvm create-dmg
+          if ! command -v pkg-config &>/dev/null; then
+            brew install pkg-config
+          fi
+
+      # STEP 4: Install NASM
+      - name: Install NASM 2.16.03
         script: |
           wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
           unzip nasm-2.16.03-macosx.zip
           sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
           nasm --version
-          
-      - name: Setup Rust
-        script: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain $MAC_RUST_VERSION
-          source $HOME/.cargo/env
-          rustup target add aarch64-apple-darwin
-          rustup component add rustfmt
-          
+
+      # STEP 5: Install bridge codegen tools
+      # cargo is now available via $CM_ENV PATH set above
       - name: Install Bridge Codegen Tools
         script: |
-          source $HOME/.cargo/env
           cargo install cargo-expand --version $CARGO_EXPAND_VERSION --locked
           cargo install flutter_rust_bridge_codegen --version $FLUTTER_RUST_BRIDGE_VERSION --features "uuid" --locked
-          
+
+      # STEP 6: Setup vcpkg (using /Users/builder/vcpkg as stable path)
       - name: Setup vcpkg
         script: |
           if [ ! -d "$VCPKG_ROOT" ]; then
             git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           fi
           cd "$VCPKG_ROOT"
+          git fetch origin
           git checkout $VCPKG_COMMIT_ID
           ./bootstrap-vcpkg.sh -disableMetrics
-          ./vcpkg install --x-install-root="$VCPKG_ROOT/installed"
-          
+          $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"
+          # Persist VCPKG_ROOT for subsequent steps
+          echo "VCPKG_ROOT=$VCPKG_ROOT" >> $CM_ENV
+
+      # STEP 7: Generate Flutter-Rust Bridge
+      # Uses flutter_rust_bridge_codegen from cargo bin (persisted via $CM_ENV)
       - name: Generate Flutter-Rust Bridge
         script: |
-          source $HOME/.cargo/env
           flutter_rust_bridge_codegen \
             --rust-input ./src/flutter_ffi.rs \
             --dart-output ./flutter/lib/generated_bridge.dart \
             --c-output ./flutter/macos/Runner/bridge_generated.h
           cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
-          
-      - name: Flutter prep and pub get
+
+      # STEP 8: Flutter pub get with extended_text downgrade
+      - name: Flutter pub get
         script: |
-          cd flutter
           python3 -c "
-          with open('pubspec.yaml', 'r') as f: c = f.read()
-          with open('pubspec.yaml', 'w') as f: f.write(c.replace('extended_text: 14.0.0', 'extended_text: 13.0.0'))
+          with open('flutter/pubspec.yaml', 'r') as f: c = f.read()
+          with open('flutter/pubspec.yaml', 'w') as f: f.write(c.replace('extended_text: 14.0.0', 'extended_text: 13.0.0'))
+          print('pubspec.yaml patched')
           "
-          flutter pub get
-          python3 -c "
-          import os
-          p = os.path.expandvars('$FLUTTER_ROOT/packages/flutter/lib/src/scheduler/binding.dart')
-          try:
-              with open(p, 'r') as f: c = f.read()
-              with open(p, 'w') as f: f.write(c.replace('_setFramesEnabledState(false);', '//_setFramesEnabledState(false);'))
-          except Exception: pass
-          "
-          
+          cd flutter && flutter pub get
+
+      # STEP 9: Apply all codebase patches using Python (macOS sed differs from Linux, Python is safe)
       - name: Apply codebase patches
         script: |
-          MIN_VER="12.3"
-          python3 -c "
-          import sys
-          def rp(f, o, n):
+          python3 << 'PYEOF'
+          import re
+
+          def rp(filepath, old, new):
               try:
-                  with open(f, 'r') as file: c = file.read()
-                  with open(f, 'w') as file: file.write(c.replace(o, n))
-              except Exception as e: print(f'Err in {f}: {e}')
-          
-          rp('build.py', 'MACOSX_DEPLOYMENT_TARGET=10.14', f'MACOSX_DEPLOYMENT_TARGET={MIN_VER}')
-          rp('build.py', 'MACOSX_DEPLOYMENT_TARGET=10.15', f'MACOSX_DEPLOYMENT_TARGET={MIN_VER}')
-          rp('flutter/macos/Podfile', \"platform :osx, '10.14'\", f\"platform :osx, '{MIN_VER}'\")
-          rp('flutter/macos/Podfile', \"platform :osx, '10.15'\", f\"platform :osx, '{MIN_VER}'\")
-          rp('Cargo.toml', 'osx_minimum_system_version = \"10.14\"', f'osx_minimum_system_version = \"{MIN_VER}\"')
-          rp('Cargo.toml', 'osx_minimum_system_version = \"10.15\"', f'osx_minimum_system_version = \"{MIN_VER}\"')
-          rp('flutter/macos/Runner.xcodeproj/project.pbxproj', 'MACOSX_DEPLOYMENT_TARGET = 10.14;', f'MACOSX_DEPLOYMENT_TARGET = {MIN_VER};')
-          rp('flutter/macos/Runner.xcodeproj/project.pbxproj', 'MACOSX_DEPLOYMENT_TARGET = 10.15;', f'MACOSX_DEPLOYMENT_TARGET = {MIN_VER};')
-          
-          rp('libs/hbb_common/src/config.rs', 'self.get_string(key, \"original\", vec![\"adaptive\"])', 'self.get_string(key, \"adaptive\", vec![\"original\"])')
-          rp('libs/hbb_common/src/config.rs', 'self.get_string(key, \"scrollauto\", vec![\"scrolledge\", \"scrollbar\"])', 'self.get_string(key, \"scrollbar\", vec![\"scrollauto\", \"scrolledge\"])')
-          "
-          
-      - name: Build macOS App
+                  with open(filepath, 'r', encoding='utf-8') as f:
+                      content = f.read()
+                  if old in content:
+                      with open(filepath, 'w', encoding='utf-8') as f:
+                          f.write(content.replace(old, new))
+                      print(f"Patched: {filepath}")
+                  else:
+                      print(f"WARNING: pattern not found in {filepath}: {old[:60]}")
+              except Exception as e:
+                  print(f"ERROR in {filepath}: {e}")
+                  raise
+
+          def rp_regex(filepath, pattern, replacement):
+              try:
+                  with open(filepath, 'r', encoding='utf-8') as f:
+                      content = f.read()
+                  new_content, count = re.subn(pattern, replacement, content)
+                  if count > 0:
+                      with open(filepath, 'w', encoding='utf-8') as f:
+                          f.write(new_content)
+                      print(f"Patched {count} occurrence(s): {filepath}")
+                  else:
+                      print(f"WARNING: regex not found in {filepath}: {pattern[:60]}")
+              except Exception as e:
+                  print(f"ERROR in {filepath}: {e}")
+                  raise
+
+          MIN_VER = "12.3"
+
+          # 1. build.py - MACOSX_DEPLOYMENT_TARGET
+          rp_regex('build.py', r'MACOSX_DEPLOYMENT_TARGET=[0-9]+\.[0-9]+', f'MACOSX_DEPLOYMENT_TARGET={MIN_VER}')
+
+          # 2. CocoaPods Podfile
+          rp_regex('flutter/macos/Podfile', r"platform :osx, '[^']*'", f"platform :osx, '{MIN_VER}'")
+
+          # 3. Cargo.toml
+          rp_regex('Cargo.toml', r'osx_minimum_system_version = "[0-9]+\.[0-9]+"', f'osx_minimum_system_version = "{MIN_VER}"')
+
+          # 4. Xcode project.pbxproj
+          rp_regex('flutter/macos/Runner.xcodeproj/project.pbxproj', r'MACOSX_DEPLOYMENT_TARGET = [0-9]+\.[0-9]+;', f'MACOSX_DEPLOYMENT_TARGET = {MIN_VER};')
+
+          # 5. Flutter scheduler binding fix (suppress _setFramesEnabledState error)
+          import subprocess, os
+          flutter_root = subprocess.check_output(['flutter', '--version', '--machine'], text=True)
+          # Use `which flutter` to find flutter root
+          flutter_bin = subprocess.check_output(['which', 'flutter'], text=True).strip()
+          flutter_pkg_root = os.path.join(os.path.dirname(os.path.dirname(flutter_bin)), 'packages')
+          binding_path = os.path.join(flutter_pkg_root, 'flutter', 'lib', 'src', 'scheduler', 'binding.dart')
+          if os.path.exists(binding_path):
+              rp(binding_path, '_setFramesEnabledState(false);', '//_setFramesEnabledState(false);')
+          else:
+              print(f"WARNING: binding.dart not found at {binding_path}, skipping")
+
+          # 6. hbb_common config patches (view style + scroll style defaults)
+          rp('libs/hbb_common/src/config.rs',
+             'self.get_string(key, "original", vec!["adaptive"])',
+             'self.get_string(key, "adaptive", vec!["original"])')
+          rp('libs/hbb_common/src/config.rs',
+             'self.get_string(key, "scrollauto", vec!["scrolledge", "scrollbar"])',
+             'self.get_string(key, "scrollbar", vec!["scrollauto", "scrolledge"])')
+
+          print("All patches applied successfully.")
+          PYEOF
+
+      # STEP 10: Build the macOS app using build.py
+      - name: Build macOS arm64 app
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.3"
         script: |
-          source $HOME/.cargo/env
-          export MACOSX_DEPLOYMENT_TARGET="12.3"
           python3 build.py --flutter --hwcodec --unix-file-copy-paste
-          
-      - name: Package into DMG
+
+      # STEP 11: Package into DMG
+      - name: Create DMG
         script: |
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          # Patch create-dmg to fix unmounting issue (using python, not sed)
           python3 -c "
           import sys
-          f = sys.argv[1]
-          with open(f, 'r') as file: c = file.read()
-          with open(f, 'w') as file: file.write(c.replace('MAXIMUM_UNMOUNTING_ATTEMPTS=3', 'MAXIMUM_UNMOUNTING_ATTEMPTS=7'))
+          path = sys.argv[1]
+          with open(path, 'r') as f: c = f.read()
+          with open(path, 'w') as f: f.write(c.replace('MAXIMUM_UNMOUNTING_ATTEMPTS=3', 'MAXIMUM_UNMOUNTING_ATTEMPTS=7'))
           " "$CREATE_DMG"
           create-dmg \
             --icon "RustDesk.app" 200 190 \
@@ -131,6 +190,6 @@ workflows:
             --app-drop-link 600 185 \
             DigitalSolution-macOS-AppleSilicon-arm64.dmg \
             ./flutter/build/macos/Build/Products/Release/RustDesk.app || true
-            
+
     artifacts:
       - "*.dmg"
